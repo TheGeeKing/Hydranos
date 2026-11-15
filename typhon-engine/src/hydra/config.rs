@@ -170,14 +170,39 @@ impl Session {
     }
 }
 
-/// Order in which hoard torrents join the announce schedule.
+/// Order in which an engine's torrents join the announce schedule.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[repr(u8)]
 pub enum AnnounceSort {
     #[default]
-    Default,
-    Size,
-    Ratio,
+    Default = 0,
+    Size = 1,
+    Ratio = 2,
+}
+
+/// An engine's announce order while it runs: a settings save changes it, and
+/// the scheduler reads it on its next cycle.
+#[derive(Debug, Default)]
+pub struct LiveAnnounceSort(std::sync::atomic::AtomicU8);
+
+impl LiveAnnounceSort {
+    pub fn new(sort: AnnounceSort) -> Self {
+        Self(std::sync::atomic::AtomicU8::new(sort as u8))
+    }
+
+    pub fn get(&self) -> AnnounceSort {
+        match self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => AnnounceSort::Size,
+            2 => AnnounceSort::Ratio,
+            _ => AnnounceSort::Default,
+        }
+    }
+
+    pub fn set(&self, sort: AnnounceSort) {
+        self.0
+            .store(sort as u8, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// One engine's section of the config ([race] or [hoard]).
@@ -186,7 +211,7 @@ pub enum AnnounceSort {
 /// and is served verbatim by /api/settings, which re-reads it.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Session {
-    /// Hoard announce admission order. Read at startup.
+    /// Order in which torrents not announced yet join the schedule. Applied live.
     #[serde(default)]
     pub announce_sort: AnnounceSort,
     #[serde(default)]

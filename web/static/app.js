@@ -8085,7 +8085,7 @@ const _SETTINGS_DESC = {
     max_connections: "Global cap on simultaneous peer connections for this session.",
     max_uploads_per_torrent: "Unchoke slots per seeding torrent, used only while choking is on (-1 = unlimited, 0 = 4). Applied live.",
     max_uploads: "Cap on unchoked peers across ALL this engine's seeding torrents, on top of max_uploads_per_torrent; the best-ranked peers keep the slots. Active only with the choker (choking = true); with choking off it has no effect (-1 = no cap, 0 = 4). Applied live.",
-    announce_sort: "Hoard announce admission order: default preserves the current order; size announces larger torrents first; ratio announces higher share ratios first. Tracker deadlines are preserved. Requires restart.",
+    announce_sort: "Order in which torrents that have not announced yet join the schedule: default spreads them as before; size announces larger torrents first; ratio announces higher share ratios first. Torrents already announcing keep their deadlines. Applied live.",
     choking: "Run the choker: only max_uploads_per_torrent peers per seeding torrent are served, re-ranked every 10 s. Off by default, and best left off: on a large library it churns the peers and can cut total upload by an order of magnitude. Turn it on only when the uplink itself is the bottleneck. Applied live.",
     peer_timeout: "Seconds a peer may send nothing useful (keep-alives do not count) before it is dropped. 0 = 300; under 120 is raised to 120. Applied live.",
     inactivity_timeout: "Seconds before an idle peer is considered inactive.",
@@ -8127,7 +8127,7 @@ const _SETTINGS_COMMON = new Set([
     "auth::username", "auth::password_hash",
     // Connection + Speed + Queueing, per engine (race & hoard)
     "race::listen_port", "race::bind_interface", "race::enable_ipv6", "race::max_connections", "race::max_uploads_per_torrent", "race::max_uploads",
-    "race::upload_rate_limit", "race::download_rate_limit", "race::choking",
+    "race::announce_sort", "race::upload_rate_limit", "race::download_rate_limit", "race::choking",
     "race::active_downloads", "race::active_seeds", "race::active_limit", "race::queueing",
     "race::dont_count_slow_torrents", "race::slow_torrent_dl_rate_threshold", "race::slow_torrent_ul_rate_threshold", "race::slow_torrent_inactive_timer",
     "race::max_ratio", "race::max_seeding_time", "race::max_inactive_seeding_time", "race::share_limit_action",
@@ -8189,6 +8189,7 @@ const _SETTINGS_DEFAULT = {
     "hoard::max_ratio": -1, "hoard::max_seeding_time": -1, "hoard::max_inactive_seeding_time": -1, "hoard::share_limit_action": "stop",
     "race::upload_rate_limit": 0, "race::download_rate_limit": 0, "race::choking": false,
     "hoard::upload_rate_limit": 0, "hoard::download_rate_limit": 0, "hoard::choking": false,
+    "race::announce_sort": "default", "hoard::announce_sort": "default",
     "race_drain::enabled": true, "race_drain::check_interval_seconds": 60,
     "race_drain::high_watermark_pct": 95, "race_drain::low_watermark_pct": 85,
     "vpn_speedtest::interval_secs": 0, "vpn_speedtest::duration_secs": 10, "vpn_speedtest::iperf3_port": 5201,
@@ -8208,6 +8209,7 @@ const _LIVE_ENGINE_KEY_DEFAULTS = {
     queueing: false, active_seeds: -1, active_limit: -1,
     dont_count_slow_torrents: false, slow_torrent_dl_rate_threshold: 2, slow_torrent_ul_rate_threshold: 2, slow_torrent_inactive_timer: 60,
     max_ratio: -1, max_seeding_time: -1, max_inactive_seeding_time: -1, share_limit_action: "stop",
+    announce_sort: "default",
 };
 function _withLiveEngineKeys(cfg) {
     for (const sec of ["race", "hoard"]) {
@@ -8215,7 +8217,6 @@ function _withLiveEngineKeys(cfg) {
         for (const [k, d] of Object.entries(_LIVE_ENGINE_KEY_DEFAULTS)) {
             if (!(k in cfg[sec])) cfg[sec][k] = d;
         }
-        if (sec === "hoard" && !("announce_sort" in cfg[sec])) cfg[sec].announce_sort = "default";
         // LSD's switch, at the value the daemon runs with when the file says
         // nothing (Session::lsd_on): on for race, off for hoard.
         if (!("enable_lsd" in cfg[sec])) cfg[sec].enable_lsd = sec === "race";
@@ -8504,7 +8505,7 @@ function _readSettingField(id, orig) {
 const _LIVE_ENGINE_KEYS = new Set(["upload_rate_limit", "download_rate_limit", "peer_timeout", "choking", "max_uploads_per_torrent", "max_uploads",
     "active_downloads", "queueing", "active_seeds", "active_limit",
     "dont_count_slow_torrents", "slow_torrent_dl_rate_threshold", "slow_torrent_ul_rate_threshold", "slow_torrent_inactive_timer",
-    "max_ratio", "max_seeding_time", "max_inactive_seeding_time", "share_limit_action"]);
+    "max_ratio", "max_seeding_time", "max_inactive_seeding_time", "share_limit_action", "announce_sort"]);
 function _settingTier(section, key) {
     if (section === "daemon" || section === "auth") return "full";
     if (section === "race" || section === "hoard" || section.startsWith("race.") || section.startsWith("hoard.")) {

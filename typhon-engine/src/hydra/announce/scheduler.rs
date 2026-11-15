@@ -306,8 +306,11 @@ pub struct Outcome {
 pub trait Catalogue: Send + Sync + 'static {
     /// Every torrent that should be announced right now.
     fn hashes(&self) -> Vec<String>;
-    /// Preserve catalogue order when spreading new admissions across a cycle.
-    fn ordered_admission(&self) -> bool {
+    /// Put the torrents not admitted yet in the order they should join, and
+    /// say whether that order is to be kept. Called every cycle, on those
+    /// alone: once the catalogue is in, there is next to nothing to rank.
+    /// `false` (the default) leaves them spread by hash across the cycle.
+    fn rank_new(&self, _new: &mut Vec<String>) -> bool {
         false
     }
     /// The host of the tracker this torrent announces to first. Torrents of
@@ -897,16 +900,17 @@ fn reconcile_now<C: Catalogue>(
     let mut seen = std::collections::HashSet::with_capacity(live.len());
     let mut added = 0usize;
     let cycle_start = Instant::now();
+    let mut new = Vec::new();
     for hash in live {
         seen.insert(hash.clone());
-        if states.contains_key(&hash) {
-            continue;
+        if !states.contains_key(&hash) {
+            new.push(hash);
         }
-        // The rest join on the next cycle. `seen` already holds them, so they
-        // are not mistaken for departures in the meantime.
-        if added >= quota {
-            continue;
-        }
+    }
+    let ordered = catalogue.rank_new(&mut new);
+    // The rest join on a later cycle. `seen` already holds them, so they are
+    // not mistaken for departures in the meantime.
+    for hash in new.into_iter().take(quota) {
         added += 1;
         states.insert(
             hash.clone(),
@@ -936,7 +940,7 @@ fn reconcile_now<C: Catalogue>(
         // quota leaving in the same millisecond is the burst this admission
         // limit exists to prevent, and it would only get bigger now that the
         // quota scales with the catalogue.
-        let at = if catalogue.ordered_admission() {
+        let at = if ordered {
             cycle_start + RECONCILE.mul_f64((added - 1) as f64 / quota as f64)
         } else {
             Instant::now() + spread(&hash, RECONCILE)
@@ -1099,7 +1103,8 @@ mod tests {
 
     #[test]
     fn ordered_admission_preserves_rank_and_spreads_the_quota() {
-        struct Ranked;
+        /// How many torrents each cycle handed over to be ranked.
+        struct Ranked(std::sync::Mutex<Vec<usize>>);
         impl Catalogue for Ranked {
             fn hashes(&self) -> Vec<String> {
                 (0..MIN_NEW_PER_CYCLE + 1)
@@ -1107,19 +1112,21 @@ mod tests {
                     .map(|i| format!("{i:040x}"))
                     .collect()
             }
-            fn ordered_admission(&self) -> bool {
+            fn rank_new(&self, new: &mut Vec<String>) -> bool {
+                self.0.lock().unwrap().push(new.len());
                 true
             }
         }
-        let catalogue = Arc::new(Ranked);
+        let catalogue = Arc::new(Ranked(Default::default()));
         let mut states = HashMap::new();
         let mut heap = BinaryHeap::new();
+        let mut hosts = HashMap::new();
         reconcile_now(
             &catalogue,
             &mut states,
             &mut heap,
             &Admission::default(),
-            &mut HashMap::new(),
+            &mut hosts,
         );
         assert_eq!(states.len(), MIN_NEW_PER_CYCLE);
         assert!(!states.contains_key(&format!("{:040x}", 0)));
@@ -1129,6 +1136,16 @@ mod tests {
             assert_eq!(d.info_hash, format!("{expected:040x}"));
             assert!(d.at.duration_since(first) < RECONCILE);
         }
+        // The next cycle ranks only the one still waiting, not the catalogue.
+        reconcile_now(
+            &catalogue,
+            &mut states,
+            &mut heap,
+            &Admission::default(),
+            &mut hosts,
+        );
+        assert_eq!(*catalogue.0.lock().unwrap(), [MIN_NEW_PER_CYCLE + 1, 1]);
+        assert!(states.contains_key(&format!("{:040x}", 0)));
     }
 
     /// The scheduler publishes what it admitted, and what is still queued.
