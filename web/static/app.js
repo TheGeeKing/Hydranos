@@ -8085,6 +8085,7 @@ const _SETTINGS_DESC = {
     max_connections: "Global cap on simultaneous peer connections for this session.",
     max_uploads_per_torrent: "Unchoke slots per seeding torrent, used only while choking is on (-1 = unlimited, 0 = 4). Applied live.",
     max_uploads: "Cap on unchoked peers across ALL this engine's seeding torrents, on top of max_uploads_per_torrent; the best-ranked peers keep the slots. Active only with the choker (choking = true); with choking off it has no effect (-1 = no cap, 0 = 4). Applied live.",
+    announce_sort: "Hoard announce admission order: default preserves the current order; size announces larger torrents first; ratio announces higher share ratios first. Tracker deadlines are preserved. Requires restart.",
     choking: "Run the choker: only max_uploads_per_torrent peers per seeding torrent are served, re-ranked every 10 s. Off by default, and best left off: on a large library it churns the peers and can cut total upload by an order of magnitude. Turn it on only when the uplink itself is the bottleneck. Applied live.",
     peer_timeout: "Seconds a peer may send nothing useful (keep-alives do not count) before it is dropped. 0 = 300; under 120 is raised to 120. Applied live.",
     inactivity_timeout: "Seconds before an idle peer is considered inactive.",
@@ -8131,7 +8132,7 @@ const _SETTINGS_COMMON = new Set([
     "race::dont_count_slow_torrents", "race::slow_torrent_dl_rate_threshold", "race::slow_torrent_ul_rate_threshold", "race::slow_torrent_inactive_timer",
     "race::max_ratio", "race::max_seeding_time", "race::max_inactive_seeding_time", "race::share_limit_action",
     "hoard::listen_port", "hoard::bind_interface", "hoard::enable_ipv6", "hoard::max_connections", "hoard::max_uploads_per_torrent", "hoard::max_uploads",
-    "hoard::upload_rate_limit", "hoard::download_rate_limit", "hoard::choking",
+    "hoard::announce_sort", "hoard::upload_rate_limit", "hoard::download_rate_limit", "hoard::choking",
     "hoard::active_downloads", "hoard::active_seeds", "hoard::active_limit", "hoard::queueing",
     "hoard::dont_count_slow_torrents", "hoard::slow_torrent_dl_rate_threshold", "hoard::slow_torrent_ul_rate_threshold", "hoard::slow_torrent_inactive_timer",
     "hoard::max_ratio", "hoard::max_seeding_time", "hoard::max_inactive_seeding_time", "hoard::share_limit_action",
@@ -8192,7 +8193,7 @@ const _SETTINGS_DEFAULT = {
     "race_drain::high_watermark_pct": 95, "race_drain::low_watermark_pct": 85,
     "vpn_speedtest::interval_secs": 0, "vpn_speedtest::duration_secs": 10, "vpn_speedtest::iperf3_port": 5201,
 };
-const _SETTINGS_ENUM = { share_limit_action: ["stop", "remove", "remove_with_files"] };
+const _SETTINGS_ENUM = { announce_sort: ["default", "size", "ratio"], share_limit_action: ["stop", "remove", "remove_with_files"] };
 
 // Engine keys the daemon applies live and creates when the file lacks them
 // (LIVE_SESSION_KEYS in api.rs). The editor lists what the file holds, so a
@@ -8214,6 +8215,7 @@ function _withLiveEngineKeys(cfg) {
         for (const [k, d] of Object.entries(_LIVE_ENGINE_KEY_DEFAULTS)) {
             if (!(k in cfg[sec])) cfg[sec][k] = d;
         }
+        if (sec === "hoard" && !("announce_sort" in cfg[sec])) cfg[sec].announce_sort = "default";
         // LSD's switch, at the value the daemon runs with when the file says
         // nothing (Session::lsd_on): on for race, off for hoard.
         if (!("enable_lsd" in cfg[sec])) cfg[sec].enable_lsd = sec === "race";

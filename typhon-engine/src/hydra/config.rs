@@ -170,12 +170,25 @@ impl Session {
     }
 }
 
+/// Order in which hoard torrents join the announce schedule.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnnounceSort {
+    #[default]
+    Default,
+    Size,
+    Ratio,
+}
+
 /// One engine's section of the config ([race] or [hoard]).
 ///
 /// Only the keys the ported surface reads are typed. The rest stays in the file
 /// and is served verbatim by /api/settings, which re-reads it.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Session {
+    /// Hoard announce admission order. Read at startup.
+    #[serde(default)]
+    pub announce_sort: AnnounceSort,
     #[serde(default)]
     pub registration_retry_minutes: Option<u64>,
     #[serde(default)]
@@ -1390,5 +1403,27 @@ mod default_tests {
             ports.len(),
             "no two engines share a port: {ports:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod announce_sort_tests {
+    use super::*;
+
+    #[test]
+    fn announce_sort_defaults_and_rejects_unknown_values() {
+        assert_eq!(
+            toml::from_str::<Session>("").unwrap().announce_sort,
+            AnnounceSort::Default
+        );
+        for (value, expected) in [
+            ("default", AnnounceSort::Default),
+            ("size", AnnounceSort::Size),
+            ("ratio", AnnounceSort::Ratio),
+        ] {
+            let session: Session = toml::from_str(&format!("announce_sort = \"{value}\"")).unwrap();
+            assert_eq!(session.announce_sort, expected);
+        }
+        assert!(toml::from_str::<Session>("announce_sort = \"unknown\"").is_err());
     }
 }

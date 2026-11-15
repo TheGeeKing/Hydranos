@@ -556,6 +556,7 @@ impl EngineHost {
                         },
                         engine.announce_cache.clone(),
                         engine.admission.clone(),
+                        session.announce_sort,
                     );
                     // Set once, when this engine joins the network.
                     let _ = engine.bump.set(bump);

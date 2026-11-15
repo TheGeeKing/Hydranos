@@ -276,6 +276,8 @@ share_limit_action = "stop"
 # HOARD SESSION - upload-optimized (long-term seeding)
 # ─────────────────────────────────────────────
 [hoard]
+# Announce admission: default, size (largest first), ratio (highest first). Restart required.
+announce_sort = "default"
 listen_port = 16172
 # Pin this engine's peer sockets to one host interface (optional), by NAME,
 # e.g. "wg0": resolved to its IP at start, so it survives VPN IP changes.

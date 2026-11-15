@@ -104,12 +104,33 @@ pub enum Mode {
 /// The engine's live torrent list, seen by the scheduler.
 struct EngineCatalogue {
     manager: Arc<TorrentManager>,
+    sort: crate::config::AnnounceSort,
 }
 
 impl Catalogue for EngineCatalogue {
     fn hashes(&self) -> Vec<String> {
-        self.manager
-            .all()
+        let mut torrents = self.manager.all();
+        match self.sort {
+            crate::config::AnnounceSort::Default => {}
+            crate::config::AnnounceSort::Size => torrents.sort_unstable_by(|a, b| {
+                b.meta
+                    .total_size
+                    .cmp(&a.meta.total_size)
+                    .then_with(|| a.info_hash.cmp(&b.info_hash))
+            }),
+            crate::config::AnnounceSort::Ratio => {
+                let mut ranked: Vec<_> = torrents
+                    .into_iter()
+                    .map(|t| (crate::row::torrent_ratio(&t), t))
+                    .collect();
+                ranked.sort_unstable_by(|a, b| {
+                    b.0.total_cmp(&a.0)
+                        .then_with(|| a.1.info_hash.cmp(&b.1.info_hash))
+                });
+                torrents = ranked.into_iter().map(|(_, t)| t).collect();
+            }
+        }
+        torrents
             .iter()
             // A paused torrent is not announced. Telling a tracker we are a
             // peer for something we will not serve earns a connection attempt
@@ -126,6 +147,10 @@ impl Catalogue for EngineCatalogue {
             })
             .map(|t| hex(&t.info_hash))
             .collect()
+    }
+
+    fn ordered_admission(&self) -> bool {
+        self.sort != crate::config::AnnounceSort::Default
     }
 
     fn host_of(&self, info_hash: &str) -> String {
@@ -255,9 +280,15 @@ pub fn start(
     mode: Mode,
     cache: Arc<Cache>,
     admission: Arc<scheduler::Admission>,
+    sort: crate::config::AnnounceSort,
 ) -> tokio::sync::mpsc::Sender<scheduler::BumpReq> {
     let catalogue = Arc::new(EngineCatalogue {
         manager: manager.clone(),
+        sort: if mode == Mode::Hoard {
+            sort
+        } else {
+            crate::config::AnnounceSort::Default
+        },
     });
     let hook_manager = manager.clone();
     // One breaker for the engine, not one per torrent: an outage belongs to the
@@ -1394,6 +1425,28 @@ mod announce_one_tests {
             live.push(vec![announce.to_string()]);
         }
         typhon_engine::torrent::hex_encode(&ih)
+    }
+
+    #[tokio::test]
+    async fn ratio_admission_uses_highest_lifetime_ratio_first() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (manager, root) = manager("ratio-order");
+        let low = add(&manager, "low", "http://tracker.test/announce");
+        let high = add(&manager, "high", "http://tracker.test/announce");
+        let zero = add(&manager, "zero", "http://tracker.test/announce");
+        for (hash, uploaded) in [(&low, 16384), (&high, 49152), (&zero, 0)] {
+            let t = manager.get(&parse_hex(hash).unwrap()).unwrap();
+            t.total_uploaded.store(uploaded, Relaxed);
+            t.total_downloaded.store(16384, Relaxed);
+        }
+        let catalogue = EngineCatalogue {
+            manager,
+            sort: crate::config::AnnounceSort::Ratio,
+        };
+        assert_eq!(catalogue.hashes(), vec![high, low, zero]);
+        assert!(catalogue.ordered_admission());
+        drop(catalogue);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn parts() -> (Policy, Breaker, Cache) {
