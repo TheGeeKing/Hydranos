@@ -21,6 +21,16 @@ decided when the release is cut, by looking at what went in: whoever tags it
 renames the heading to `## v<major>.<release>.<patch> -- title` and sets
 `HYDRANOS_VERSION` in the same commit.
 
+## Unreleased -- less memory per torrent
+
+### Changed
+
+- Each torrent costs less memory, which on a large library is most of what the daemon holds: a seeding torrent with no peer connected measured 2,152 bytes before and 1,352 after (jemalloc, 100,000 torrents), and by their type sizes the announce scheduler, the announce cache and the resume save shed about 450 bytes more per torrent between them. On a node of 290,000 torrents that is an estimated 340 to 375 MiB less. The list of a torrent's peers is only allocated while it has one, what the write path keeps is built at the first write and dropped when the torrent seeds, the tracker list and the tracker hosts are kept once instead of once per torrent and per copy, and info hashes are held as their 20 bytes instead of 40-character strings. Nothing changes in the API, the configuration or the stored state.
+
+### Fixed
+
+- The "tracker outage" anomaly looked at the trackers the .torrent listed, not at the ones the torrent announces to: a tracker removed from a torrent could still flag it, and one added could not. It now reads the live tracker list. So does the one-time pause, at startup, of torrents that were announcing under a borrowed client identity.
+
 ## v4.9.2 -- an import from qBittorrent that finds a single file in its own folder
 
 ### Fixed
