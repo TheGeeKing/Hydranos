@@ -889,7 +889,7 @@ pub struct TorrentState {
     /// says as `recheck_pending`, so a restart in between runs it again. Set
     /// with `rechecking`, cleared by the verdict -- not by the end of the
     /// task, which also comes after a pass that could not read the disk.
-    pub recheck_owed: AtomicBool,
+    pub(crate) recheck_owed: AtomicBool,
     /// How many proofs hold this torrent (see `ProofHold`). Above 0 it is read
     /// as checking: it is stopped at 0 % only because a job is still hashing
     /// what it shares with another torrent, and a verification asked in that

@@ -3367,9 +3367,12 @@ impl TorrentManager {
         }
         // Owed until its verdict, and written down now: the check may wait
         // hours behind the others, and a restart in that wait must not find
-        // a record that says only "nothing held" (`recheck_pending`).
-        t.recheck_owed.store(true, Ordering::SeqCst);
-        let _ = self.try_persist_live(info_hash);
+        // a record that says only "nothing held" (`recheck_pending`). Only
+        // when it was not owed already: a start or an adoption that runs a
+        // check left pending finds the mark in the record it just read.
+        if !t.recheck_owed.swap(true, Ordering::Relaxed) {
+            let _ = self.try_persist_live(info_hash);
+        }
         // A seed_mode torrent has no picker (data trusted; no bitfield -> cheap at
         // scale). To recheck it, create an all-missing picker on demand so
         // run_recheck can populate it from disk. Only rechecked torrents pay for a
@@ -3582,7 +3585,7 @@ impl TorrentManager {
         // Persist the verified bitfield so a restart does not re-check from
         // scratch (mirrors the resume written at add / on piece completion).
         // The verdict is in: nothing is owed any more, in the same write.
-        t.recheck_owed.store(false, Ordering::SeqCst);
+        t.recheck_owed.store(false, Ordering::Relaxed);
         let _ = self.try_persist_live(&ih);
         info!(
             "[recheck] {} verified {}/{} pieces -> {}",
