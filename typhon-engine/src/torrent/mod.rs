@@ -2861,8 +2861,18 @@ impl TorrentManager {
 
     /// Export one torrent's durable state, for handing it to another engine.
     /// Returns None if the torrent is not held here.
+    ///
+    /// A check still owed travels as `recheck_pending`, and the adopting
+    /// engine runs it: the picker of such a torrent holds no verdict yet. A
+    /// torrent a proof holds owes one too, though it has not asked it yet: its
+    /// check runs when the proof ends, on the engine it was added to, which a
+    /// move leaves without it. `rename_file` reads a hold the same way.
     pub fn export_state(&self, info_hash: &InfoHash) -> Option<fastresume::ResumeData> {
-        self.get(info_hash).map(|t| Self::build_resume_data(&t))
+        self.get(info_hash).map(|t| {
+            let mut rd = Self::build_resume_data(&t);
+            rd.recheck_pending |= t.rechecking.load(Ordering::SeqCst) || t.held_for_proof();
+            rd
+        })
     }
 
     /// Adopt a torrent from another engine, progression and all.
@@ -4251,6 +4261,72 @@ mod lifecycle_tests {
         mgr.recheck(&ih).expect("recheck starts");
         wait_recheck_end(&t).await;
         assert!(t.error_msg.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// ⭐ A torrent added over its data and moved to another engine before its
+    /// check had run left as a download at 0 %: the record carried the picker
+    /// the check had not filled yet, the target took it for nothing
+    /// downloaded, and the source's check, its torrent gone, ended without a
+    /// verdict. The target downloaded again what was on disk. The check is
+    /// held at the semaphore for the whole move, as the queue of a big import
+    /// holds it.
+    #[tokio::test]
+    async fn a_torrent_moved_while_its_check_is_queued_is_checked_where_it_lands() {
+        let hold = recheck_sem().acquire_many(4).await.unwrap();
+        let (src, root, ih, t) = whole_two_piece_torrent("movedmidcheck");
+        // What the add endpoint does for a torrent whose data is on disk.
+        src.recheck(&ih).expect("recheck starts");
+        assert!(t.rechecking.load(Ordering::SeqCst), "its check is queued");
+        let record = src.export_state(&ih).expect("exported");
+        assert!(record.recheck_pending, "the record says a check is owed");
+        // The graduation carries the record through the job's parameters.
+        let carried: fastresume::ResumeData =
+            serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
+        assert!(carried.recheck_pending, "and the mark survives the trip");
+        let source = src.blob_source.read().unwrap().clone().expect("a source");
+        let blob = source(&record.info_hash).expect("the metainfo");
+
+        let (dst, dst_root) = manager("movedmidcheck-dst");
+        // Both engines of a node read the metainfo from one store.
+        dst.set_blob_source(source.clone());
+        dst.import_state_bytes(&record, &blob).expect("adopted");
+        src.remove_torrent(&ih, true).expect("released");
+        let moved = dst.get(&ih).expect("held by the target");
+        assert!(
+            moved.rechecking.load(Ordering::SeqCst),
+            "the target checks the disk instead of downloading"
+        );
+        drop(hold);
+        wait_recheck_end(&moved).await;
+        assert_eq!(
+            moved.status.load(Ordering::Relaxed),
+            TorrentStatus::Seeding as u8,
+            "the data on disk is whole: a seed, not a download at 0 %"
+        );
+        assert_eq!(moved.picker.get().unwrap().lock().unwrap().num_have(), 2);
+        assert!(
+            !dst.export_state(&ih).expect("exported").recheck_pending,
+            "the verdict is in: nothing is owed any more"
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&dst_root).ok();
+    }
+
+    /// A torrent a proof holds is checked when the proof ends, by the engine
+    /// it was added to: moved before that, it is checked where it lands. A
+    /// torrent with nothing pending moves without a check.
+    #[tokio::test]
+    async fn a_torrent_held_for_proof_is_exported_as_owing_its_check() {
+        let (mgr, root, ih, t) = whole_two_piece_torrent("movedheld");
+        assert!(
+            !mgr.export_state(&ih).expect("exported").recheck_pending,
+            "nothing pending, nothing to check"
+        );
+        let hold = t.hold_for_proof();
+        assert!(mgr.export_state(&ih).expect("exported").recheck_pending);
+        drop(hold);
+        assert!(!mgr.export_state(&ih).expect("exported").recheck_pending);
         std::fs::remove_dir_all(&root).ok();
     }
 
