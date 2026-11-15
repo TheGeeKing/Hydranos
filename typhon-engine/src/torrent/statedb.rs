@@ -58,6 +58,9 @@ pub struct Fingerprint {
     /// Parked because pieces it held were found missing: lifting the park
     /// must reach the record as surely as setting it.
     pub data_lost: bool,
+    /// A check asked and not yet answered: the verdict clearing it must reach
+    /// the record, or every start would run the check again.
+    pub recheck_pending: bool,
     /// What the immediate edits change: tracker list, save path, download
     /// order, file renames. A hash, so a row that ever differs from memory
     /// for one of them is rewritten by the next sweep, whatever made it so.
@@ -87,7 +90,8 @@ CREATE TABLE IF NOT EXISTS torrent_state (
     download_order   TEXT NOT NULL DEFAULT '',
     bitfield_sum     TEXT NOT NULL DEFAULT '',
     file_renames     TEXT NOT NULL DEFAULT '',
-    data_lost        TEXT NOT NULL DEFAULT ''
+    data_lost        TEXT NOT NULL DEFAULT '',
+    recheck_pending  INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -158,6 +162,13 @@ impl StateDb {
         // Same migration; an older build ignores it, and a recheck clears it.
         let _ = conn.execute(
             "ALTER TABLE torrent_state ADD COLUMN data_lost TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        // A check asked and not yet answered, 1 until its verdict. Same
+        // migration; an older build ignores it, and loses only the check a
+        // restart would have run.
+        let _ = conn.execute(
+            "ALTER TABLE torrent_state ADD COLUMN recheck_pending INTEGER NOT NULL DEFAULT 0",
             [],
         );
         let _ = conn.execute_batch(
@@ -352,7 +363,7 @@ impl StateDb {
             "SELECT info_hash, save_path, seed_mode, paused,
                     total_uploaded, total_downloaded, added_time, completed_time,
                     bitfield, trackers, seed_secs, up_limit, down_limit, download_order,
-                    bitfield_sum, file_renames, data_lost
+                    bitfield_sum, file_renames, data_lost, recheck_pending
              FROM torrent_state",
         ) {
             Ok(s) => s,
@@ -397,6 +408,7 @@ impl StateDb {
                 download_order: decode_order(&row.get::<_, String>(13).unwrap_or_default()),
                 file_renames: decode_renames(&row.get::<_, String>(15).unwrap_or_default()),
                 data_lost: row.get(16).unwrap_or_default(),
+                recheck_pending: row.get::<_, i64>(17).unwrap_or(0) != 0,
             })
         }
         let rows = match rows {
@@ -476,8 +488,8 @@ fn put_in(conn: &Connection, rd: &ResumeData) -> Result<(), rusqlite::Error> {
             (info_hash, save_path, seed_mode, paused,
              total_uploaded, total_downloaded, added_time, completed_time,
              bitfield, trackers, seed_secs, up_limit, down_limit, download_order,
-             bitfield_sum, file_renames, data_lost)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             bitfield_sum, file_renames, data_lost, recheck_pending)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(info_hash) DO UPDATE SET
             save_path=excluded.save_path,
             seed_mode=excluded.seed_mode,
@@ -494,7 +506,8 @@ fn put_in(conn: &Connection, rd: &ResumeData) -> Result<(), rusqlite::Error> {
             download_order=excluded.download_order,
             bitfield_sum=excluded.bitfield_sum,
             file_renames=excluded.file_renames,
-            data_lost=excluded.data_lost",
+            data_lost=excluded.data_lost,
+            recheck_pending=excluded.recheck_pending",
         params![
             rd.info_hash,
             rd.save_path,
@@ -513,6 +526,7 @@ fn put_in(conn: &Connection, rd: &ResumeData) -> Result<(), rusqlite::Error> {
             bitfield_sum(&rd.bitfield),
             encode_renames(&rd.file_renames),
             rd.data_lost,
+            rd.recheck_pending as i64,
         ],
     )?;
     Ok(())
@@ -597,6 +611,7 @@ mod tests {
             }),
             file_renames: [(1usize, "sub/x.mkv".to_string())].into_iter().collect(),
             data_lost: String::new(),
+            recheck_pending: false,
         }
     }
 
