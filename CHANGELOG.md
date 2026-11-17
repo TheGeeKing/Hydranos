@@ -21,6 +21,12 @@ decided when the release is cut, by looking at what went in: whoever tags it
 renames the heading to `## v<major>.<release>.<patch> -- title` and sets
 `HYDRANOS_VERSION` in the same commit.
 
+## Unreleased -- a recheck interrupted by a restart runs after it
+
+### Fixed
+
+- A torrent added over data already on disk whose check was still waiting its turn (four run at a time) when the daemon restarted came back as a download at 0 %, with no check queued, and downloaded again data that was already there. The same happened to any recheck still queued or under way at a restart. A recheck now marks the torrent's stored record (new `recheck_pending` column in the state database, `recheck_pending` in the JSON resume files) as soon as it is asked, and its verdict clears the mark; the next start rechecks the torrents that still carry it, and only those. A recheck that cannot read the disk keeps the mark, so the start after the volume is back runs it again. An engine move carries the mark too, and the adopting engine runs the check: a torrent moved from race to hoard right after it was added over its data no longer arrives at 0 % and downloads it again. The same goes for a torrent moved while the files it shares with another torrent are still being proven. An older build reading the database ignores the column.
+
 ## Unreleased -- less memory per torrent
 
 ### Changed

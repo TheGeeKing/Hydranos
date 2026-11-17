@@ -999,6 +999,11 @@ pub struct TorrentState {
     pub rechecking: AtomicBool,
     /// Serializes check initialization, verdict publication, and Stop.
     pub(super) recheck_stop: parking_lot::Mutex<Option<crate::stop::Stop>>,
+    /// A recheck was asked and has given no verdict yet: what the record
+    /// says as `recheck_pending`, so a restart in between runs it again. Set
+    /// with `rechecking`, cleared by the verdict -- not by the end of the
+    /// task, which also comes after a pass that could not read the disk.
+    pub(crate) recheck_owed: AtomicBool,
     /// How many proofs hold this torrent (see `ProofHold`). Above 0 it is read
     /// as checking: it is stopped at 0 % only because a job is still hashing
     /// what it shares with another torrent, and a verification asked in that
@@ -1690,6 +1695,7 @@ impl TorrentState {
             is_removed: AtomicBool::new(false),
             rechecking: AtomicBool::new(false),
             recheck_stop: parking_lot::Mutex::new(None),
+            recheck_owed: AtomicBool::new(false),
             proof_holds: AtomicU32::new(0),
             recheck_done: AtomicU32::new(0),
             write_state: RwLock::new(WriteState::default()),
