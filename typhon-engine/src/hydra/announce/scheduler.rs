@@ -1166,11 +1166,8 @@ mod tests {
         /// How many torrents each cycle handed over to be ranked.
         struct Ranked(std::sync::Mutex<Vec<usize>>);
         impl Catalogue for Ranked {
-            fn hashes(&self) -> Vec<String> {
-                (0..MIN_NEW_PER_CYCLE + 1)
-                    .rev()
-                    .map(|i| format!("{i:040x}"))
-                    .collect()
+            fn hashes(&self) -> Vec<InfoHash> {
+                (0..MIN_NEW_PER_CYCLE + 1).rev().map(nth).collect()
             }
             fn rank_new(&self, new: &mut Vec<InfoHash>) -> bool {
                 self.0.lock().unwrap().push(new.len());
@@ -1189,11 +1186,11 @@ mod tests {
             &mut hosts,
         );
         assert_eq!(states.len(), MIN_NEW_PER_CYCLE);
-        assert!(!states.contains_key(&format!("{:040x}", 0)));
+        assert!(!states.contains_key(&nth(0)));
         let first = heap.peek().unwrap().0.at;
         for expected in (1..=MIN_NEW_PER_CYCLE).rev() {
             let Reverse(d) = heap.pop().unwrap();
-            assert_eq!(d.info_hash, format!("{expected:040x}"));
+            assert_eq!(d.info_hash, nth(expected));
             assert!(d.at.duration_since(first) < RECONCILE);
         }
         // The next cycle ranks only the one still waiting, not the catalogue.
@@ -1205,7 +1202,7 @@ mod tests {
             &mut hosts,
         );
         assert_eq!(*catalogue.0.lock().unwrap(), [MIN_NEW_PER_CYCLE + 1, 1]);
-        assert!(states.contains_key(&format!("{:040x}", 0)));
+        assert!(states.contains_key(&nth(0)));
     }
 
     /// The scheduler publishes what it admitted, and what is still queued.

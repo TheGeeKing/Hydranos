@@ -1442,9 +1442,10 @@ mod announce_one_tests {
             manager,
             sort: sort.clone(),
         };
-        let mut new = vec![zero.clone(), low.clone(), high.clone()];
+        let [zero, low, high] = [zero, low, high].map(|h| parse_hex(&h).unwrap());
+        let mut new = vec![zero, low, high];
         assert!(!catalogue.rank_new(&mut new), "default keeps the spread");
-        assert_eq!(new, vec![zero.clone(), low.clone(), high.clone()]);
+        assert_eq!(new, vec![zero, low, high]);
         // Changed while running: the next cycle ranks what is still waiting.
         sort.set(crate::config::AnnounceSort::Ratio);
         assert!(catalogue.rank_new(&mut new));
