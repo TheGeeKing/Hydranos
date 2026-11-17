@@ -104,6 +104,22 @@ pub enum Mode {
 /// The engine's live torrent list, seen by the scheduler.
 struct EngineCatalogue {
     manager: Arc<TorrentManager>,
+    sort: Arc<crate::config::LiveAnnounceSort>,
+}
+
+/// `new`, highest key first; equal keys in info hash order, so a ranking is
+/// the same on every cycle.
+fn rank_by<K>(
+    new: &mut Vec<String>,
+    key: impl Fn(&str) -> K,
+    higher_first: impl Fn(&K, &K) -> std::cmp::Ordering,
+) {
+    let mut keyed: Vec<(K, String)> = std::mem::take(new)
+        .into_iter()
+        .map(|h| (key(&h), h))
+        .collect();
+    keyed.sort_unstable_by(|a, b| higher_first(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
+    new.extend(keyed.into_iter().map(|(_, h)| h));
 }
 
 impl Catalogue for EngineCatalogue {
@@ -126,6 +142,25 @@ impl Catalogue for EngineCatalogue {
             })
             .map(|t| hex(&t.info_hash))
             .collect()
+    }
+
+    fn rank_new(&self, new: &mut Vec<String>) -> bool {
+        use crate::config::AnnounceSort;
+        let torrent = |h: &str| parse_hex(h).and_then(|ih| self.manager.get(&ih));
+        match self.sort.get() {
+            AnnounceSort::Default => return false,
+            AnnounceSort::Size => rank_by(
+                new,
+                |h| torrent(h).map_or(0, |t| t.meta.total_size),
+                |a, b| b.cmp(a),
+            ),
+            AnnounceSort::Ratio => rank_by(
+                new,
+                |h| torrent(h).map_or(0.0, |t| crate::row::torrent_ratio(&t)),
+                |a, b| b.total_cmp(a),
+            ),
+        }
+        true
     }
 
     fn host_of(&self, info_hash: &str) -> String {
@@ -255,9 +290,11 @@ pub fn start(
     mode: Mode,
     cache: Arc<Cache>,
     admission: Arc<scheduler::Admission>,
+    sort: Arc<crate::config::LiveAnnounceSort>,
 ) -> tokio::sync::mpsc::Sender<scheduler::BumpReq> {
     let catalogue = Arc::new(EngineCatalogue {
         manager: manager.clone(),
+        sort,
     });
     let hook_manager = manager.clone();
     // One breaker for the engine, not one per torrent: an outage belongs to the
@@ -1394,6 +1431,34 @@ mod announce_one_tests {
             live.push(vec![announce.to_string()]);
         }
         typhon_engine::torrent::hex_encode(&ih)
+    }
+
+    #[tokio::test]
+    async fn ratio_admission_ranks_the_waiting_torrents_once_switched_on() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (manager, root) = manager("ratio-order");
+        let low = add(&manager, "low", "http://tracker.test/announce");
+        let high = add(&manager, "high", "http://tracker.test/announce");
+        let zero = add(&manager, "zero", "http://tracker.test/announce");
+        for (hash, uploaded) in [(&low, 16384), (&high, 49152), (&zero, 0)] {
+            let t = manager.get(&parse_hex(hash).unwrap()).unwrap();
+            t.total_uploaded.store(uploaded, Relaxed);
+            t.total_downloaded.store(16384, Relaxed);
+        }
+        let sort = Arc::new(crate::config::LiveAnnounceSort::default());
+        let catalogue = EngineCatalogue {
+            manager,
+            sort: sort.clone(),
+        };
+        let mut new = vec![zero.clone(), low.clone(), high.clone()];
+        assert!(!catalogue.rank_new(&mut new), "default keeps the spread");
+        assert_eq!(new, vec![zero.clone(), low.clone(), high.clone()]);
+        // Changed while running: the next cycle ranks what is still waiting.
+        sort.set(crate::config::AnnounceSort::Ratio);
+        assert!(catalogue.rank_new(&mut new));
+        assert_eq!(new, vec![high, low, zero]);
+        drop(catalogue);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn parts() -> (Policy, Breaker, Cache) {
