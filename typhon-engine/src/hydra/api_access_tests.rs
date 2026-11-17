@@ -192,6 +192,13 @@ fn routes_in(src: &str) -> Vec<String> {
     out
 }
 
+/// An embedded source file with LF line endings whatever the checkout. These
+/// tests find where a function ends by `"\n}\n"`, and a Windows checkout
+/// (`core.autocrlf`, the Git for Windows default) holds `"\r\n}\r\n"`.
+fn lf(src: &str) -> String {
+    src.replace("\r\n", "\n")
+}
+
 /// Every route of the real router, asked with no key and no session, on every
 /// verb: all of them are refused but the ones OPEN lists. The routes come from
 /// the router's own source, so a route added to it, or to one of the files it
@@ -202,8 +209,9 @@ async fn every_route_but_the_open_ones_refuses_a_caller_with_no_key() {
         let from = src.find(head).unwrap_or_else(|| panic!("{head} not found"));
         &src[from..from + end_of_fn(&src[from..]).unwrap()]
     }
-    let router_src = fn_body(include_str!("api.rs"), "fn router_with(");
-    let merged: &[(&str, &str)] = &[
+    let api = lf(include_str!("api.rs"));
+    let router_src = fn_body(&api, "fn router_with(");
+    let merged: Vec<(&str, String)> = [
         ("rulesapi", include_str!("rulesapi.rs")),
         ("magnets", include_str!("magnets.rs")),
         ("rss", include_str!("rss/routes.rs")),
@@ -211,7 +219,10 @@ async fn every_route_but_the_open_ones_refuses_a_caller_with_no_key() {
         ("watch", include_str!("watch.rs")),
         ("selection", include_str!("selection.rs")),
         ("mcp", include_str!("mcp.rs")),
-    ];
+    ]
+    .into_iter()
+    .map(|(name, src)| (name, lf(src)))
+    .collect();
     // A module merged into the router and missing from the table above would
     // be a hole in this test, not in the router.
     let mut named: Vec<&str> = router_src
@@ -228,7 +239,7 @@ async fn every_route_but_the_open_ones_refuses_a_caller_with_no_key() {
     );
 
     let mut paths = routes_in(router_src);
-    for (_, src) in merged {
+    for (_, src) in &merged {
         paths.extend(routes_in(fn_body(src, "pub fn routes()")));
     }
     assert!(paths.len() > 250, "only {} routes found", paths.len());
@@ -686,7 +697,7 @@ async fn the_rescue_router_with_no_key_to_check_refuses_everyone() {
 /// router has no `/api/login`, so the box has to take the key itself.
 #[test]
 fn the_repair_screen_asks_for_the_key_not_a_login() {
-    let js = include_str!("../../../web/static/app.js");
+    let js = lf(include_str!("../../../web/static/app.js"));
     let from = js
         .find("async function showStoreRepairModal")
         .expect("repair screen");
@@ -779,7 +790,7 @@ async fn the_rescue_setup_announces_the_repair_screen() {
 /// in the field the screen tests.
 #[tokio::test]
 async fn the_repair_answer_carries_what_the_screen_reads() {
-    let js = include_str!("../../../web/static/app.js");
+    let js = lf(include_str!("../../../web/static/app.js"));
     let from = js
         .find("async function showStoreRepairModal")
         .expect("repair screen");

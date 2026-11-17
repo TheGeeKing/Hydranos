@@ -1008,10 +1008,7 @@ pub fn condition_key(c: &Cond) -> String {
         h.update([0]);
         h.update(tag.as_bytes());
     }
-    h.finalize()[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    typhon_engine::torrent::hex_encode_bytes(&h.finalize()[..8])
 }
 
 /// A condition of a workflow that carries a `for`.
@@ -2450,6 +2447,12 @@ mod tests {
 
 #[cfg(test)]
 mod editor_delete_tests {
+    /// An embedded source file with LF line endings whatever the checkout. These
+    /// tests find where a function ends by `"\n}\n"`, and a Windows checkout
+    /// (`core.autocrlf`, the Git for Windows default) holds `"\r\n}\r\n"`.
+    fn lf(src: &str) -> String {
+        src.replace("\r\n", "\n")
+    }
     /// The workflow editor offers delete twice, and each entry says what
     /// happens to the files: "delete the torrent" with a checkbox below left
     /// the label silent on the one thing that matters. The entry that takes
@@ -2457,7 +2460,7 @@ mod editor_delete_tests {
     /// with_files set; the other never sets it.
     #[test]
     fn the_editor_names_both_deletes_and_saves_the_one_that_takes_the_files() {
-        let js = include_str!("../../../web/static/app.js");
+        let js = lf(include_str!("../../../web/static/app.js"));
         let start = js.find("const WF_ACTIONS").expect("app.js has WF_ACTIONS");
         let list = &js[start..start + js[start..].find("];").expect("list ends")];
         assert!(
@@ -2488,7 +2491,7 @@ mod editor_delete_tests {
     /// condition had no tag to choose and every save was refused.
     #[test]
     fn app_js_declares_each_function_once() {
-        let js = include_str!("../../../web/static/app.js");
+        let js = lf(include_str!("../../../web/static/app.js"));
         let mut seen = std::collections::HashSet::new();
         for line in js.lines() {
             let rest = line
@@ -2510,7 +2513,7 @@ mod editor_delete_tests {
     /// tab button names its tab in `data-tab`, and the switches read that.
     #[test]
     fn detail_tabs_are_lit_by_their_key_not_their_translated_text() {
-        let html = include_str!("../../../web/templates/index.html");
+        let html = lf(include_str!("../../../web/templates/index.html"));
         let mut buttons = 0;
         for class in ["detail-tab", "h-detail-tab"] {
             let open = format!("<button class=\"{class}");
@@ -2524,7 +2527,7 @@ mod editor_delete_tests {
             }
         }
         assert_eq!(buttons, 7, "expected 4 race tabs and 3 hoard tabs");
-        let js = include_str!("../../../web/static/app.js");
+        let js = lf(include_str!("../../../web/static/app.js"));
         for name in ["switchDetailTab", "switchHoardDetailTab"] {
             let body = &js[js
                 .find(&format!("function {name}("))
@@ -2565,8 +2568,8 @@ mod editor_delete_tests {
     /// typed -- escaped on its way into the page.
     #[test]
     fn the_workflows_tab_is_wired_in_both_panels() {
-        let html = include_str!("../../../web/templates/index.html");
-        let js = include_str!("../../../web/static/app.js");
+        let html = lf(include_str!("../../../web/templates/index.html"));
+        let js = lf(include_str!("../../../web/static/app.js"));
         for (class, panel, switch, show, body) in [
             (
                 "detail-tab",
@@ -2594,8 +2597,7 @@ mod editor_delete_tests {
                 "no {panel} div, hidden at first"
             );
             assert!(html.contains(&format!("id=\"{body}\"")), "no {body}");
-            // The load below spans two lines; a CRLF checkout must match too.
-            let f = js_function(js, switch).replace("\r\n", "\n");
+            let f = js_function(&js, switch);
             assert!(
                 f.contains(&format!(
                     "getElementById(\"{panel}\").style.display = tab === \"workflows\""
@@ -2612,17 +2614,17 @@ mod editor_delete_tests {
 
         // Loaded on opening and on the Recalculate button, nothing else: no
         // timer, and no call from the periodic refresh of the panel.
-        let load = js_function(js, "loadWorkflowsTab");
+        let load = js_function(&js, "loadWorkflowsTab");
         assert!(!load.contains("setInterval") && !load.contains("setTimeout"));
-        assert!(!js_function(js, "refreshDetail").contains("loadWorkflowsTab"));
+        assert!(!js_function(&js, "refreshDetail").contains("loadWorkflowsTab"));
         assert!(
-            js_function(js, "renderWorkflowsTab")
+            js_function(&js, "renderWorkflowsTab")
                 .contains("onclick=\"loadWorkflowsTab(this.dataset.hash, this.dataset.body)\""),
             "the Recalculate button reads its arguments from data attributes"
         );
 
         // Everything the API sends goes through the escaping helper.
-        let row = js_function(js, "_wfTabRow");
+        let row = js_function(&js, "_wfTabRow");
         assert!(
             row.contains("esc(w.name)"),
             "the rule's name is not escaped"
@@ -2631,8 +2633,8 @@ mod editor_delete_tests {
             !row.contains("${w.name}"),
             "the rule's name is written raw into the page"
         );
-        assert!(js_function(js, "_wfTabCondRow").contains("esc(_wfTabCondText(c))"));
-        assert!(js_function(js, "_wfTabRow").contains("esc(acts)"));
+        assert!(js_function(&js, "_wfTabCondRow").contains("esc(_wfTabCondText(c))"));
+        assert!(js_function(&js, "_wfTabRow").contains("esc(acts)"));
     }
 }
 
