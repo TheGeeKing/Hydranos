@@ -1,0 +1,154 @@
+# Tier 1 scale benchmark: one Hydranos and six tracker hosts t1..t6.
+# run.py drives it and picks the tracker with COMPOSE_PROFILES:
+#   torrust      nginx (t1..t6, faults, access log) -> Torrust Tracker  (default)
+#   opentracker  nginx (t1..t6, no faults)          -> opentracker
+#   homemade     tools/scale/tracker.py answering as t1..t6 (legacy)
+# nginx and Torrust read their config from the run directory, where run.py
+# writes it (tracker-conf/), so a run records exactly what it ran with.
+# SCALE_WORK holds catalogue/ (from catalogue.py) and results/.
+name: hydranos-scale
+
+x-python: &python
+  # Pinned by digest so the tracker and the loader are the same software on
+  # every machine. python:3.13-alpine.
+  image: ${SCALE_PYTHON_IMAGE:-python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e}
+
+services:
+  # nginx in front of Torrust or opentracker: carries the six host names,
+  # applies the per-host faults and logs every announce. stable-alpine was
+  # 1.30.2 (with njs 0.9.9, used for the latency) when pinned.
+  nginx:
+    image: ${SCALE_NGINX_IMAGE:-nginx:stable-alpine@sha256:5f979dcfed4ce6461873f087e8c980d6e29b084b9e8776d9704a7e989b5f4898}
+    profiles: [torrust, opentracker]
+    command: ["nginx", "-c", "/work/${SCALE_RUN_DIR:-results/manual}/tracker-conf/nginx.conf", "-g", "daemon off;"]
+    stop_grace_period: 10s
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - { type: bind, source: ., target: /scale, read_only: true }
+      - { type: bind, source: "${SCALE_WORK:?set SCALE_WORK to the work directory}", target: /work }
+    ports:
+      - "127.0.0.1:${TRACKER_PORT:-16969}:6969"   # probes and curl checks from the host
+    networks:
+      scale:
+        # Six tracker hosts, one nginx: one server block per Host header.
+        aliases: [t1, t2, t3, t4, t5, t6]
+
+  # The same digests as tools/interop/run.sh.
+  torrust:
+    image: ${SCALE_TORRUST_IMAGE:-torrust/tracker@sha256:5801a73010692b820da0d33ecd5505922a41b4c9df3060c89de100bcaa89aa68}
+    profiles: [torrust]
+    environment:
+      TORRUST_TRACKER_CONFIG_TOML_PATH: /work/${SCALE_RUN_DIR:-results/manual}/tracker-conf/torrust.toml
+    stop_grace_period: 5s
+    volumes:
+      - { type: bind, source: "${SCALE_WORK:?set SCALE_WORK}", target: /work, read_only: true }
+    ports:
+      - "127.0.0.1:${TRACKER_API_PORT:-16970}:1212"   # REST API: /api/v1/stats
+    networks: [scale]
+
+  opentracker:
+    image: ${SCALE_OPENTRACKER_IMAGE:-lednerb/opentracker-docker@sha256:a055447e44450036b7b2a923618b12d4ecf1eff3c894e969cc2c42f466b2c6f6}
+    profiles: [opentracker]
+    stop_grace_period: 5s
+    ports:
+      - "127.0.0.1:${TRACKER_API_PORT:-16970}:6969"   # /stats
+    networks: [scale]
+
+  # Legacy: the homemade tracker (run.py --tracker homemade).
+  tracker:
+    <<: *python
+    profiles: [homemade]
+    user: "${SCALE_UID:-0}:${SCALE_GID:-0}"
+    command:
+      - python
+      - /scale/tracker.py
+      - --seed=${SCALE_SEED:-1}
+      - --profile=${TRACKER_PROFILE:-default}
+      - --interval=${TRACKER_INTERVAL:-1800}
+      - --min-interval=${TRACKER_MIN_INTERVAL:-900}
+      - --manifest=/work/catalogue/manifest.json
+      - --csv=/work/${SCALE_RUN_DIR:-results/manual}/tracker.csv
+      - --stats-out=/work/${SCALE_RUN_DIR:-results/manual}/tracker-final.json
+    stop_grace_period: 10s
+    volumes:
+      - { type: bind, source: ., target: /scale, read_only: true }
+      - { type: bind, source: "${SCALE_WORK:?set SCALE_WORK to the work directory}", target: /work }
+    ports:
+      - "127.0.0.1:${TRACKER_PORT:-16969}:6969"   # /stats and /control for run.py
+    networks:
+      scale:
+        # Six tracker hosts, one process: the tracker tells them apart by the
+        # Host header. No DNS or hosts-file edit anywhere.
+        aliases: [t1, t2, t3, t4, t5, t6]
+
+  # One-shot: writes the payload straight into the data volume (regenerated
+  # from the seed, so nothing crosses a slow host bind mount), re-hashes a
+  # sample, and hands the files to the uid Hydranos runs as.
+  loader:
+    <<: *python
+    profiles: [tools]
+    command:
+      - sh
+      - -c
+      - >-
+        rm -rf /data/payload && mkdir -p /data/payload &&
+        python /scale/catalogue.py payload --catalogue /work/catalogue --data /data/payload &&
+        python /scale/catalogue.py verify --catalogue /work/catalogue --data /data/payload --sample 200 > /dev/null &&
+        chown -R ${PUID:-1000}:${PGID:-1000} /data
+    volumes:
+      - { type: bind, source: ., target: /scale, read_only: true }
+      - { type: bind, source: "${SCALE_WORK:?set SCALE_WORK}", target: /work, read_only: true }
+      - data:/data
+
+  hydranos:
+    # A release, pinned by digest (v4.9.2). Override HYDRANOS_IMAGE to test
+    # another build; run.py records whatever ran.
+    image: ${HYDRANOS_IMAGE:-ghcr.io/kheopsian/hydranos:v4.9.2@sha256:6d6766bfb79811f4e652331fc2c8be1e1097e1a1bc5e073f2b9741f83bc6d43b}
+    # No depends_on: the tracker service depends on the profile; run.py
+    # starts it first.
+    # The machine envelope: what "a standard machine" means for these numbers.
+    cpus: ${HYDRANOS_CPUS:-4}
+    mem_limit: ${HYDRANOS_MEM:-4g}
+    memswap_limit: ${HYDRANOS_MEM:-4g}   # same as mem_limit: no swap
+    # Own cgroup namespace, so /sys/fs/cgroup inside is this container's cgroup
+    # (sample.py reads it there).
+    cgroup: private
+    # Same run options as the README's docker run.
+    stop_grace_period: 150s
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    ports:
+      # Host ports shifted by default so a real Hydranos on this machine
+      # (8199, 16171, 16172) is not in the way.
+      - "127.0.0.1:${HYDRANOS_PORT:-18199}:8199"
+      - "127.0.0.1:${HYDRANOS_RACE_PORT:-26171}:16171/tcp"
+      - "127.0.0.1:${HYDRANOS_RACE_PORT:-26171}:16171/udp"
+      - "127.0.0.1:${HYDRANOS_HOARD_PORT:-26172}:16172/tcp"
+      - "127.0.0.1:${HYDRANOS_HOARD_PORT:-26172}:16172/udp"
+    volumes:
+      - config:/config
+      - data:/data
+    networks: [scale]
+    # Optional disk throttling, off by default. Values are per device, so name
+    # the device that backs Docker's volumes on YOUR host (lsblk; on Docker
+    # Desktop the VM's disk, usually /dev/sda or /dev/vda). Needs the io
+    # controller, i.e. a cgroup v2 host with a real block device under it.
+    # blkio_config:
+    #   device_read_bps:   [{ path: /dev/sda, rate: 200mb }]
+    #   device_write_bps:  [{ path: /dev/sda, rate: 150mb }]
+    #   device_read_iops:  [{ path: /dev/sda, rate: 3000 }]
+    #   device_write_iops: [{ path: /dev/sda, rate: 3000 }]
+    logging:
+      driver: json-file
+      options: { max-size: "128m", max-file: "5" }
+
+volumes:
+  config:
+  data:
+
+networks:
+  scale:

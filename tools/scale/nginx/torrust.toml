@@ -1,0 +1,54 @@
+# Torrust Tracker for the scale benchmark, PUBLIC mode. Template: trackers.py
+# replaces @INTERVAL@ and @INTERVAL_MIN@ and writes the result into the run
+# directory; the announce ramp rewrites it and restarts the container.
+#
+# Based on tools/interop/torrust.toml, with these differences:
+#   private = false    the catalogue's passkey URLs need no key check here;
+#                      nginx strips the /<passkey>/ path segment before it
+#   statistics on      /api/v1/stats is read back (announces handled, peers)
+#   no persistence     nothing needs to outlive a restart
+#   long peer timeout  a peer told interval=1800 must not expire between two
+#                      announces, so the peer count after a graceful stop
+#                      still means "never sent event=stopped"
+#   logging warn       info logs every request
+[metadata]
+app = "torrust-tracker"
+purpose = "configuration"
+schema_version = "3.0.0"
+
+[logging]
+trace_filter = "warn"
+
+[core]
+listed = false
+private = false
+tracker_usage_statistics = true
+inactive_peer_cleanup_interval = 600
+
+[core.database]
+driver = "sqlite3"
+path = "/tmp/torrust-scale.db"
+
+[core.announce_policy]
+interval = @INTERVAL@
+interval_min = @INTERVAL_MIN@
+
+[core.tracker_policy]
+max_peer_timeout = 7200
+persistent_torrent_completed_stat = false
+remove_peerless_torrents = true
+
+[[http_trackers]]
+bind_address = "0.0.0.0:7070"
+tracker_usage_statistics = true
+# nginx sits in front: take the peer address from X-Forwarded-For.
+network = { on_reverse_proxy = true }
+
+[http_api]
+bind_address = "0.0.0.0:1212"
+
+[http_api.access_tokens]
+admin = "scale-admin-token"
+
+[health_check_api]
+bind_address = "0.0.0.0:1313"

@@ -1,0 +1,2 @@
+# Scripts here run inside Linux containers too: keep them LF everywhere.
+* text=auto eol=lf
